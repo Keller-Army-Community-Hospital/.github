@@ -1,0 +1,115 @@
+name: Decision
+description: Open a question to be decided. When it's settled, add the record-decision label and a decision record is drafted for review.
+title: "Decision: "
+type: Decision
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for decisions of consequence: expensive to reverse, crossing lines of effort, or likely to be questioned by a newcomer.
+        Fill in the first three sections now. Debate in the comments. When the team decides, **edit this issue** to fill in the outcome sections, then add the **record-decision** label.
+        Terms follow the project glossary (`project-hq/glossary/`).
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and problem statement
+      description: Two or three sentences. The situation, the constraint that forces a choice, and the question being answered.
+      placeholder: Off-the-shelf sensor modules cost more per unit, but custom boards need a qualified electronics lead we don't always have. Which do we build MARS around?
+    validations:
+      required: true
+
+  - type: textarea
+    id: options
+    attributes:
+      label: Considered options
+      description: One option per line. Include the obvious alternative a newcomer would propose.
+      placeholder: |
+        Off-the-shelf sensor modules
+        Custom sensor boards
+    validations:
+      required: true
+
+  - type: textarea
+    id: drivers
+    attributes:
+      label: Decision drivers
+      description: Optional. The requirements or constraints that matter most, one per line.
+    validations:
+      required: false
+
+  - type: input
+    id: makers
+    attributes:
+      label: Decision makers
+      description: Names and roles, comma-separated.
+      placeholder: SFC White (MARS NCOIC), Jordan Beason (lead MARS engineer)
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        ### Fill in when decided
+        Leave these blank when opening the issue. Edit the issue to complete them once the decision is made.
+
+  - type: input
+    id: chosen
+    attributes:
+      label: Chosen option
+      description: Exactly as written in Considered options.
+    validations:
+      required: false
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: Reason
+      description: Why this option, in a sentence or two. Completes "Chosen option X, because ..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: good
+    attributes:
+      label: Good consequences
+      description: One per line.
+    validations:
+      required: false
+
+  - type: textarea
+    id: bad
+    attributes:
+      label: Bad consequences
+      description: One per line. Every real decision has some.
+    validations:
+      required: false
+
+  - type: input
+    id: date
+    attributes:
+      label: Date decided
+      description: YYYY-MM-DD. For a past decision, the date it was actually made, approximate is fine. Leave blank for today.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: retro
+    attributes:
+      label: Recorded after the fact?
+      description: Choose Yes when recording a decision made before this issue existed.
+      options:
+        - "No"
+        - "Yes"
+      default: 0
+    validations:
+      required: true
+
+  - type: textarea
+    id: links
+    attributes:
+      label: More information
+      description: Optional. Links to test data, datasheets, related issues or earlier decision records, one per line.
+    validations:
+      required: false

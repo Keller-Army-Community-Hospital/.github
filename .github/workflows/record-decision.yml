@@ -1,0 +1,164 @@
+# Reusable workflow: drafts a decision record from a Decision issue and opens a pull request.
+# Called by each repository's .github/workflows/record-decision.yml.
+# The script below is generated from scripts/record-decision.js; edit that file, then regenerate.
+name: Record decision (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            // Builds a decision record from a Decision issue and opens a pull request for it.
+            // Runs inside actions/github-script; the reusable workflow embeds this file's body.
+            // Source of truth for the workflow script: edit here, then regenerate the workflow.
+
+            const LABEL = 'record-decision';
+            const DIR = 'docs/decisions';
+
+            const HEADINGS = {
+              context: 'Context and problem statement',
+              options: 'Considered options',
+              drivers: 'Decision drivers',
+              makers: 'Decision makers',
+              chosen: 'Chosen option',
+              reason: 'Reason',
+              good: 'Good consequences',
+              bad: 'Bad consequences',
+              date: 'Date decided',
+              retro: 'Recorded after the fact?',
+              links: 'More information',
+            };
+
+            function parseForm(body) {
+              const out = {};
+              const parts = (body || '').replace(/\r\n/g, '\n').split(/^### +/m);
+              for (const part of parts.slice(1)) {
+                const nl = part.indexOf('\n');
+                const heading = (nl === -1 ? part : part.slice(0, nl)).trim();
+                let value = nl === -1 ? '' : part.slice(nl + 1).trim();
+                if (value === '_No response_') value = '';
+                for (const [key, label] of Object.entries(HEADINGS)) {
+                  if (heading.toLowerCase() === label.toLowerCase()) out[key] = value;
+                }
+              }
+              return out;
+            }
+
+            function lines(text) {
+              return (text || '').split('\n').map(l => l.replace(/^\s*[-*]\s+/, '').trim()).filter(Boolean);
+            }
+
+            function slugify(title) {
+              return title.replace(/^decision:\s*/i, '').toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '') || 'decision';
+            }
+
+            function yamlList(text) {
+              const names = (text || '').split(',').map(s => s.trim()).filter(Boolean);
+              return '[' + names.map(n => JSON.stringify(n)).join(', ') + ']';
+            }
+
+            function render({ number, title, f, issueNumber, requester, today }) {
+              const cleanTitle = title.replace(/^decision:\s*/i, '').trim();
+              const date = /^\d{4}-\d{2}-\d{2}$/.test(f.date || '') ? f.date : today;
+              const out = [];
+              out.push('---', 'status: accepted', `date: ${date}`);
+              if (f.makers) out.push(`decision-makers: ${yamlList(f.makers)}`);
+              out.push('---', '', `# ${cleanTitle}`, '', '## Context and Problem Statement', '', f.context, '');
+              if (lines(f.drivers).length) {
+                out.push('## Decision Drivers', '', ...lines(f.drivers).map(l => `* ${l}`), '');
+              }
+              out.push('## Considered Options', '', ...lines(f.options).map(l => `* ${l}`), '');
+              const reason = (f.reason || '').replace(/^because\s+/i, '');
+              out.push('## Decision Outcome', '', `Chosen option: "${f.chosen}", because ${reason}`, '');
+              const lc = l => (/^[A-Z][a-z]/.test(l) ? l[0].toLowerCase() + l.slice(1) : l);
+              const good = lines(f.good).map(lc), bad = lines(f.bad).map(lc);
+              if (good.length || bad.length) {
+                out.push('### Consequences', '');
+                good.forEach(l => out.push(`* Good, because ${l.replace(/^good,?\s*(because\s+)?/i, '')}`));
+                bad.forEach(l => out.push(`* Bad, because ${l.replace(/^bad,?\s*(because\s+)?/i, '')}`));
+                out.push('');
+              }
+              out.push('## More Information', '', `* Discussion: #${issueNumber}`);
+              lines(f.links).forEach(l => out.push(`* ${l}`));
+              if ((f.retro || '').toLowerCase() === 'yes') {
+                out.push(`* Recorded retroactively on ${today} by @${requester}, from the discussion in #${issueNumber}.`);
+              }
+              out.push('');
+              return { text: out.join('\n'), cleanTitle, file: `${DIR}/${String(number).padStart(4, '0')}-${slugify(title)}.md` };
+            }
+
+            function missingFields(f) {
+              const miss = [];
+              if (!f.context) miss.push(HEADINGS.context);
+              if (lines(f.options).length < 2) miss.push(`${HEADINGS.options} (at least two)`);
+              if (!f.chosen) miss.push(HEADINGS.chosen);
+              if (!f.reason) miss.push(HEADINGS.reason);
+              return miss;
+            }
+
+            async function run({ github, context }) {
+              const { owner, repo } = context.repo;
+              const issue = context.payload.issue;
+              const requester = context.payload.sender.login;
+              const today = new Date().toISOString().slice(0, 10);
+              const removeLabel = () => github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: LABEL }).catch(() => {});
+              const comment = (body) => github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body });
+
+              const f = parseForm(issue.body);
+              const miss = missingFields(f);
+              if (miss.length) {
+                await comment(`Can't draft the decision record yet. Edit this issue to fill in: ${miss.join(', ')}. Then add the \`${LABEL}\` label again.`);
+                await removeLabel();
+                return;
+              }
+
+              const { data: repoInfo } = await github.rest.repos.get({ owner, repo });
+              const base = repoInfo.default_branch;
+
+              // Next number: highest in docs/decisions on the default branch, or on any open decision/ branch.
+              const used = [0];
+              try {
+                const { data: files } = await github.rest.repos.getContent({ owner, repo, path: DIR, ref: base });
+                for (const x of files) { const m = /^(\d{4})-/.exec(x.name); if (m) used.push(+m[1]); }
+              } catch (e) { if (e.status !== 404) throw e; }
+              const { data: refs } = await github.rest.git.listMatchingRefs({ owner, repo, ref: 'heads/decision/' });
+              for (const r of refs) { const m = /decision\/(\d{4})-/.exec(r.ref); if (m) used.push(+m[1]); }
+              const number = Math.max(...used) + 1;
+
+              const rec = render({ number, title: issue.title, f, issueNumber: issue.number, requester, today });
+              const branch = `decision/${rec.file.split('/').pop().replace(/\.md$/, '')}`;
+
+              const { data: head } = await github.rest.repos.getBranch({ owner, repo, branch: base });
+              await github.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: head.commit.sha });
+              await github.rest.repos.createOrUpdateFileContents({
+                owner, repo, branch, path: rec.file,
+                message: `Record decision ${String(number).padStart(4, '0')}: ${rec.cleanTitle}`,
+                content: Buffer.from(rec.text, 'utf8').toString('base64'),
+              });
+              const { data: pr } = await github.rest.pulls.create({
+                owner, repo, base, head: branch,
+                title: `Decision ${String(number).padStart(4, '0')}: ${rec.cleanTitle}`,
+                body: [
+                  `Drafts the decision record for #${issue.number}. Requested by @${requester}.`,
+                  '',
+                  'Review the wording, then approve. Merging accepts the record and closes the discussion.',
+                  '',
+                  `Closes #${issue.number}`,
+                ].join('\n'),
+              });
+              await comment(`Drafted decision record ${String(number).padStart(4, '0')} in #${pr.number} for review.`);
+              await removeLabel();
+            }
+
+            await run({ github, context });

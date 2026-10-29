@@ -1,0 +1,56 @@
+name: Legacy document review
+description: Review a document in legacy/ and decide whether to promote it to a live folder or reject it.
+title: "Review: "
+type: Task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue per legacy document, or per set of duplicates. See lesson 4 and the legacy intake kit.
+        **Never edit inside `legacy/`.** Corrections go in the promotion pull request.
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Legacy file(s)
+      description: Path(s) under legacy/, one per line.
+      placeholder: legacy/teams/preflight-checklist-v3.docx
+    validations:
+      required: true
+
+  - type: input
+    id: reviewer
+    attributes:
+      label: Reviewer
+      description: Name and role.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Review checklist
+      options:
+        - label: Accurate for the current airframe or process
+        - label: Checked against other live documents for conflicts
+        - label: Terms match the project glossary
+        - label: Decisions it reveals have a Decision issue (link them below)
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - Not yet decided
+        - Promote (link the pull request below)
+        - Reject (give the reason below)
+      default: 0
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes, links and reasons
+    validations:
+      required: false

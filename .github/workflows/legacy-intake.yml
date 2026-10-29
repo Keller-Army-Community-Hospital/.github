@@ -1,0 +1,165 @@
+# Reusable workflow: lists imported files in legacy/README.md, opens a review issue
+# for each when the import merges, and flags edits to existing legacy files.
+# Called by each repository's .github/workflows/legacy-intake.yml.
+# The script below is generated from scripts/legacy-intake.js; edit that file, then regenerate.
+name: Legacy intake (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  intake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            // Legacy intake automation. Runs inside actions/github-script on pull_request events
+            // that touch legacy/. The reusable workflow embeds this file's body.
+            // Source of truth for the workflow script: edit here, then regenerate the workflow.
+            //
+            //   Intake pull request (only adds files under legacy/):
+            //     - asks for Source and Date found if missing
+            //     - lists each new file in legacy/README.md on the pull request's branch
+            //     - on merge, opens one review issue per file
+            //   Any other pull request that edits an existing file in legacy/:
+            //     - comments that legacy files are never edited
+
+            const ROOT = 'legacy/';
+            const MANIFEST = 'legacy/README.md';
+            const MARK = '<!-- legacy-intake-bot -->';
+            const MANIFEST_HEADER = [
+              '# Legacy intake: do not rely on anything in this folder',
+              '',
+              'Files here were imported as found and have not been reviewed.',
+              'Certified versions live outside this folder. When this folder is',
+              'empty, intake for this line of effort is complete.',
+              '',
+              '| File | Source | Found | Imported by | Intake PR |',
+              '|---|---|---|---|---|',
+            ].join('\n');
+
+            function field(body, name) {
+              const clean = (body || '').replace(/<!--[\s\S]*?-->/g, '');
+              const m = new RegExp('^\\s*' + name + ':[ \\t]*(.*)$', 'mi').exec(clean);
+              return m ? m[1].trim() : '';
+            }
+
+            function classify(files) {
+              const inLegacy = f => f.filename.startsWith(ROOT) && f.filename !== MANIFEST;
+              const touched = files.filter(f => f.filename.startsWith(ROOT));
+              const isIntake = touched.length > 0 &&
+                files.every(f => f.filename === MANIFEST || (inLegacy(f) && f.status === 'added'));
+              const edited = files.filter(f => inLegacy(f) && (f.status === 'modified' || f.status === 'renamed'));
+              const added = files.filter(f => inLegacy(f) && f.status === 'added').map(f => f.filename);
+              return { isIntake, edited, added };
+            }
+
+            const cell = s => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+
+            function addRows(manifest, added, { source, found, author, pr }) {
+              let text = manifest && manifest.trim() ? manifest.replace(/\s*$/, '\n') : MANIFEST_HEADER + '\n';
+              const listed = new Set();
+              for (const line of text.split('\n')) {
+                const m = /^\|\s*((?:\\\||[^|])+?)\s*\|/.exec(line);
+                if (m) listed.add(m[1].replace(/\\\|/g, '|'));
+              }
+              const rows = [];
+              for (const path of added) {
+                const rel = path.slice(ROOT.length);
+                if (listed.has(rel)) continue;
+                rows.push(`| ${cell(rel)} | ${cell(source)} | ${cell(found)} | @${author} | #${pr} |`);
+              }
+              return { text: text + rows.join('\n') + (rows.length ? '\n' : ''), added: rows.length };
+            }
+
+            function reviewBody(path, pr, source, found) {
+              return [
+                '### Legacy file(s)', '', path, '',
+                '### Reviewer', '', '_No response_', '',
+                '### Review checklist', '',
+                '- [ ] Accurate for the current airframe or process',
+                '- [ ] Checked against other live documents for conflicts',
+                '- [ ] Terms match the project glossary',
+                '- [ ] Decisions it reveals have a Decision issue (link them below)', '',
+                '### Outcome', '', 'Not yet decided', '',
+                '### Notes, links and reasons', '',
+                `Imported in #${pr}. Source: ${source}. Found: ${found}.`,
+                '', 'Never edit inside `legacy/`: corrections go in the promotion pull request.',
+              ].join('\n');
+            }
+
+            async function upsertComment(github, owner, repo, number, body) {
+              const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number: number, per_page: 100 });
+              const mine = comments.find(c => (c.body || '').includes(MARK));
+              const full = MARK + '\n' + body;
+              if (mine) { if (mine.body !== full) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body: full }); }
+              else await github.rest.issues.createComment({ owner, repo, issue_number: number, body: full });
+            }
+
+            async function run({ github, context }) {
+              const { owner, repo } = context.repo;
+              const pr = context.payload.pull_request;
+              const action = context.payload.action;
+              const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 });
+              const { isIntake, edited, added } = classify(files);
+
+              if (!isIntake) {
+                if (edited.length && action !== 'closed') {
+                  await upsertComment(github, owner, repo, pr.number,
+                    'This pull request edits files inside `legacy/`: ' + edited.map(f => '`' + f.filename + '`').join(', ') +
+                    '. Legacy files are never edited. Put the corrected version in a live folder and remove the legacy copy in the same pull request (lesson 4).');
+                }
+                return;
+              }
+
+              const source = field(pr.body, 'Source');
+              const found = field(pr.body, 'Date found') || new Date().toISOString().slice(0, 10);
+
+              if (action === 'closed') {
+                if (!pr.merged) return;
+                const created = [];
+                for (const path of added) {
+                  const params = { owner, repo, title: `Review: ${path}`, body: reviewBody(path, pr.number, source || 'not given', found) };
+                  let issue;
+                  try { ({ data: issue } = await github.rest.issues.create({ ...params, type: 'Task' })); }
+                  catch (e) { ({ data: issue } = await github.rest.issues.create(params)); }
+                  created.push(`#${issue.number} ${path}`);
+                }
+                await github.rest.issues.createComment({ owner, repo, issue_number: pr.number,
+                  body: 'Opened a review issue for each imported file:\n' + created.map(c => '- ' + c).join('\n') });
+                return;
+              }
+
+              if (!source) {
+                await upsertComment(github, owner, repo, pr.number,
+                  'Thanks for the import. Before it can be listed, edit this pull request’s description and fill in:\n\n' +
+                  '```\nSource: where these files came from (e.g. Teams: MARS > Files > SOPs)\nDate found: YYYY-MM-DD\n```');
+                return;
+              }
+
+              const branch = pr.head.ref;
+              let manifest = '', sha;
+              try {
+                const { data } = await github.rest.repos.getContent({ owner, repo, path: MANIFEST, ref: branch });
+                manifest = Buffer.from(data.content, 'base64').toString('utf8'); sha = data.sha;
+              } catch (e) { if (e.status !== 404) throw e; }
+              const result = addRows(manifest, added, { source, found, author: pr.user.login, pr: pr.number });
+              if (result.added) {
+                await github.rest.repos.createOrUpdateFileContents({
+                  owner, repo, branch, path: MANIFEST, sha,
+                  message: `List ${result.added} imported file(s) in the legacy manifest`,
+                  content: Buffer.from(result.text, 'utf8').toString('base64'),
+                });
+              }
+              await upsertComment(github, owner, repo, pr.number,
+                `Listed ${added.length} file(s) in \`${MANIFEST}\` (source: ${source}; found: ${found}). ` +
+                'Anyone on the team can approve this import. When it merges, a review issue opens for each file.');
+            }
+
+            await run({ github, context });
